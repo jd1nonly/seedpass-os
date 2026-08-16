@@ -13,6 +13,18 @@ you can have GitHub build it, or build it yourself.
 
 `flash.sh` needs nothing but the image. No Docker, no Python, no build.
 
+> **This is one half of the project.** The other is
+> [**SeedPasser**](https://github.com/jd1nonly/seedpasser-android), an Android app that scans
+> what this device shows and puts it where it belongs — into a password field,
+> or back to the OS as a passkey response. The device works on its own; the app
+> saves you typing a 46-character password by hand, and is required for SIDO3
+> passkey sign-in.
+>
+> Both sides implement the wire formats in
+> [`seedpass/SPEC.md`](seedpass/SPEC.md). **Change a format here and you must
+> regenerate the conformance vectors there**, or a device and a phone will
+> disagree about what a QR code says.
+
 ---
 
 ## Getting the .img

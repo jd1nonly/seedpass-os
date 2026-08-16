@@ -46,6 +46,20 @@ Moving to a newer upstream means re-checking every anchor in `PATCHES`. The
 installer validates all of them before modifying anything, so a mismatch fails
 cleanly rather than half-patching the tree.
 
+## The other half
+
+[SeedPasser](https://github.com/jd1nonly/seedpasser-android) implements the same wire formats
+in Java. If you change one -- the `seedpass://` payloads or the SIDO3 request
+and response format -- regenerate its conformance vectors:
+
+- `app/src/test/resources/conformance_vectors.tsv` (224 payloads)
+- `app/src/test/resources/sido3_origin_vectors.tsv` (20 origin decisions)
+
+Both are produced by this repo's Python code and replayed there, so the two are
+tested for agreement rather than assumed to agree. A divergence means a device
+and a phone that disagree about what a QR code says, which is the worst failure
+mode this project has.
+
 ## Style
 
 Comments should explain why, not what. Several here record a wrong turn -- the
