@@ -1,0 +1,182 @@
+name: Build SeedPass OS image
+
+# Builds a flashable SeedPass image so you don't have to run Buildroot on your
+# own machine. GitHub's runners do the 30-60 minutes of compiling; you download
+# the .img and flash it.
+#
+# Two ways to trigger:
+#
+#   * Actions tab -> "Build SeedPass OS image" -> Run workflow
+#     The image appears as a downloadable artifact on the run page.
+#
+#   * Push a tag (git tag v1.0 && git push --tags)
+#     The image is attached to a GitHub Release, which also gives you a stable
+#     URL and a published SHA-256.
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: Which Raspberry Pi
+        type: choice
+        default: pi0
+        options: [pi0, pi02w, pi2, pi4]
+      app_commit:
+        description: SeedSigner app commit to build against
+        default: "5088588dd4f913a489329d2422b0f925ed281856"
+        required: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to attach the image to a Release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in step with build.sh. Both are pinned so the same inputs give the same
+  # image whether it is built here or on your own machine.
+  SEEDSIGNER_OS_COMMIT: 04e8ca87f5bd980bd65bda75aa694af960ababef
+  # A commit, not the 0.8.7 tag. SeedSigner refactored its seed views from
+  # `seed_num: int` to `seed: Seed` after 0.8.7; SeedPass targets the newer API.
+  SEEDSIGNER_APP_COMMIT: 5088588dd4f913a489329d2422b0f925ed281856
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Resolve board and app version
+        id: cfg
+        # One board per run. Buildroot takes 30-60 minutes even warm, so
+        # building all four by default would mostly waste runner time. Dispatch
+        # the workflow again to build another board.
+        run: |
+          echo "board=${{ inputs.board || 'pi0' }}" >> "$GITHUB_OUTPUT"
+          echo "app_commit=${{ inputs.app_commit || env.SEEDSIGNER_APP_COMMIT }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out SeedPass OS
+        uses: actions/checkout@v4
+        with:
+          path: seedpass-os
+
+      - name: Check out SeedSigner OS at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: SeedSigner/seedsigner-os
+          ref: ${{ env.SEEDSIGNER_OS_COMMIT }}
+          submodules: true
+          fetch-depth: 0
+          path: seedsigner-os
+
+      - name: Apply SeedPass to the build system
+        run: |
+          python3 seedpass-os/enable_seedpass_os.py ./seedsigner-os ./seedpass-os/seedpass --quiet
+          bash -n seedsigner-os/opt/build.sh
+          echo "patched build.sh is valid shell"
+
+      - name: Free up runner disk
+        # Buildroot needs more room than a stock runner leaves free.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Restore Buildroot cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildroot-ccache/
+            seedsigner-os/.buildroot_dl
+          key: seedpass-${{ steps.cfg.outputs.board }}-${{ env.SEEDSIGNER_OS_COMMIT }}-${{ steps.cfg.outputs.app_commit }}
+          restore-keys: |
+            seedpass-${{ steps.cfg.outputs.board }}-${{ env.SEEDSIGNER_OS_COMMIT }}-
+            seedpass-${{ steps.cfg.outputs.board }}-
+
+      - name: Build the container
+        working-directory: seedsigner-os
+        run: docker build -t seedpass-os-build .
+
+      - name: Build the image
+        working-directory: seedsigner-os
+        run: |
+          mkdir -p ~/.buildroot-ccache .buildroot_dl images
+          docker run --rm \
+            -v "$(pwd)/opt:/opt" \
+            -v "$(pwd)/images:/images" \
+            -v "$(pwd)/.buildroot_dl:/buildroot_dl" \
+            -v "${HOME}/.buildroot-ccache:/root/.buildroot-ccache" \
+            seedpass-os-build \
+            --${{ steps.cfg.outputs.board }} \
+            --app-commit-id=${{ steps.cfg.outputs.app_commit }} \
+            --app-patch=/opt/seedpass
+          sudo chown -R "$USER:$USER" images .buildroot_dl ~/.buildroot-ccache
+
+      - name: Verify version.json
+        # Written by seedsigner-os build.sh. If it is missing or has a null field
+        # the app raises at the splash screen, which looks exactly like an
+        # unrecoverable boot hang. Fail here rather than publish a bricked image.
+        working-directory: seedsigner-os/opt/rootfs-overlay/opt
+        run: |
+          cat src/seedsigner/version.json
+          jq -e '.name and .fork and .short_commit_hash and .timestamp' src/seedsigner/version.json
+
+      - name: Confirm SeedPass is actually in the image tree
+        # Cheap insurance against a silently skipped patch producing a stock
+        # SeedSigner image wearing a SeedPass filename.
+        working-directory: seedsigner-os/opt/rootfs-overlay/opt
+        run: |
+          test -f src/seedsigner/models/seedpass.py
+          test -f src/seedsigner/views/seedpass_views.py
+          test -f src/seedsigner/gui/screens/seedpass_screens.py
+          grep -q "SeedPassMenuView" src/seedsigner/views/seed_views.py
+          grep -q "NEW_SEED" src/seedsigner/views/view.py
+          echo "SeedPass present in the image tree"
+
+      - name: Hash the image
+        id: img
+        working-directory: seedsigner-os/images
+        run: |
+          ls -la
+          name="$(ls seedpass_os.*.img | head -1)"
+          sha256sum "$name" | tee "$name.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.img.outputs.name }}
+          path: |
+            seedsigner-os/images/${{ steps.img.outputs.name }}
+            seedsigner-os/images/${{ steps.img.outputs.name }}.sha256
+          if-no-files-found: error
+          # Artifacts expire; a tag build also attaches to a Release below.
+          retention-days: 30
+          compression-level: 9
+
+      - name: Attach to the Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            seedsigner-os/images/${{ steps.img.outputs.name }}
+            seedsigner-os/images/${{ steps.img.outputs.name }}.sha256
+          body: |
+            Built from `${{ github.sha }}` against SeedSigner app commit
+            `${{ steps.cfg.outputs.app_commit }}` and SeedSigner OS
+            `${{ env.SEEDSIGNER_OS_COMMIT }}`.
+
+            Verify before flashing:
+
+                sha256sum -c ${{ steps.img.outputs.name }}.sha256
+
+            Then:
+
+                ./flash.sh ${{ steps.img.outputs.name }} /dev/sdX
+
+            This image has not been audited. Reproduce it yourself with
+            `./build.sh` if you want to check it matches.

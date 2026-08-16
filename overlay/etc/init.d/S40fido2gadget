@@ -1,0 +1,131 @@
+#!/bin/sh
+#
+# S40fido2gadget -- present this device to a USB host as a FIDO2 authenticator.
+#
+# Creates a single-function USB gadget: one HID interface carrying the FIDO
+# usage page, 64-byte reports in and out. The kernel then exposes /dev/hidg0,
+# which the SeedPass CTAP2 code reads and writes.
+#
+# THE SINGLE FUNCTION IS THE SECURITY BOUNDARY. A host can only address
+# interfaces the gadget declares, so with one HID function there is no mass
+# storage, no serial, no ethernet, no ADB -- nothing to mount, nothing to log
+# into, no second endpoint to probe. Adding a function here would widen what an
+# untrusted computer can reach, and should not be done casually.
+#
+# Verify from a Linux host after building an image:
+#
+#     lsusb -v -d 1209:5070      # expect ONE interface, HID, one endpoint pair
+#     dmesg | tail               # what the host kernel actually enumerated
+#
+# That check takes a minute and is worth repeating after every image build: a
+# stray gadget function or leftover kernel module would show up immediately.
+#
+# Requires: dtoverlay=dwc2 in config.txt, and CONFIG_USB_CONFIGFS_F_HID in the
+# kernel. See seedpass-os/overlay/README for both.
+
+GADGET=/sys/kernel/config/usb_gadget/seedpass
+UDC_DRIVER=$(ls /sys/class/udc 2>/dev/null | head -n1)
+
+# pid.codes 1209:5070 -- the open-source USB VID/PID registry. Not a FIDO
+# certified vendor ID, and deliberately not borrowed from one: claiming another
+# vendor's identity would be dishonest and could collide with their drivers.
+VENDOR_ID=0x1209
+PRODUCT_ID=0x5070
+
+# The FIDO HID report descriptor, fixed by the CTAP specification.
+#
+#   06 D0 F1   Usage Page (FIDO Alliance)
+#   09 01      Usage (CTAPHID authenticator device)
+#   A1 01      Collection (Application)
+#   09 20        Usage (Input Report Data)
+#   15 00        Logical Minimum (0)
+#   26 FF 00     Logical Maximum (255)
+#   75 08        Report Size (8 bits)
+#   95 40        Report Count (64)
+#   81 02        Input (Data, Variable, Absolute)
+#   09 21        Usage (Output Report Data)
+#   15 00        Logical Minimum (0)
+#   26 FF 00     Logical Maximum (255)
+#   75 08        Report Size (8 bits)
+#   95 40        Report Count (64)
+#   91 02        Output (Data, Variable, Absolute)
+#   C0         End Collection
+REPORT_DESCRIPTOR='\x06\xd0\xf1\x09\x01\xa1\x01\x09\x20\x15\x00\x26\xff\x00\x75\x08\x95\x40\x81\x02\x09\x21\x15\x00\x26\xff\x00\x75\x08\x95\x40\x91\x02\xc0'
+
+start_gadget() {
+    if [ -d "$GADGET" ]; then
+        echo "fido2 gadget: already configured"
+        return 0
+    fi
+
+    if [ -z "$UDC_DRIVER" ]; then
+        # No USB device controller. Expected on a Pi 2, and on a Pi Zero whose
+        # config.txt is missing dtoverlay=dwc2. Not fatal: the device still
+        # works for everything that is not FIDO2.
+        echo "fido2 gadget: no UDC found, skipping (is dwc2 enabled?)"
+        return 0
+    fi
+
+    modprobe libcomposite 2>/dev/null
+
+    mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
+
+    mkdir -p "$GADGET" || return 1
+    cd "$GADGET" || return 1
+
+    echo "$VENDOR_ID"  > idVendor
+    echo "$PRODUCT_ID" > idProduct
+    echo 0x0100        > bcdDevice
+    echo 0x0200        > bcdUSB
+
+    mkdir -p strings/0x409
+    echo "SeedPass"                > strings/0x409/manufacturer
+    echo "SeedPass FIDO2"          > strings/0x409/product
+    # No serial number. A stable one would be a cross-site identifier a host
+    # could read without any user interaction.
+    echo ""                        > strings/0x409/serialnumber
+
+    mkdir -p configs/c.1/strings/0x409
+    echo "CTAP2"  > configs/c.1/strings/0x409/configuration
+    echo 100      > configs/c.1/MaxPower
+
+    mkdir -p functions/hid.usb0
+    echo 0  > functions/hid.usb0/protocol      # none; this is not a keyboard
+    echo 0  > functions/hid.usb0/subclass      # no boot protocol
+    echo 64 > functions/hid.usb0/report_length
+    printf "$REPORT_DESCRIPTOR" > functions/hid.usb0/report_desc
+
+    ln -s functions/hid.usb0 configs/c.1/
+
+    echo "$UDC_DRIVER" > UDC || {
+        echo "fido2 gadget: failed to bind $UDC_DRIVER"
+        return 1
+    }
+
+    # The CTAP2 service runs as the SeedSigner app, not as root.
+    [ -e /dev/hidg0 ] && chmod 0660 /dev/hidg0
+
+    echo "fido2 gadget: bound to $UDC_DRIVER"
+}
+
+stop_gadget() {
+    [ -d "$GADGET" ] || return 0
+
+    echo "" > "$GADGET/UDC" 2>/dev/null
+
+    rm -f "$GADGET"/configs/c.1/hid.usb0
+    rmdir "$GADGET"/configs/c.1/strings/0x409 2>/dev/null
+    rmdir "$GADGET"/configs/c.1 2>/dev/null
+    rmdir "$GADGET"/functions/hid.usb0 2>/dev/null
+    rmdir "$GADGET"/strings/0x409 2>/dev/null
+    rmdir "$GADGET" 2>/dev/null
+
+    echo "fido2 gadget: removed"
+}
+
+case "$1" in
+    start)   start_gadget ;;
+    stop)    stop_gadget ;;
+    restart) stop_gadget; start_gadget ;;
+    *)       echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
+esac
