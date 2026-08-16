@@ -1,0 +1,12 @@
+# The seedsigner-os checkout build.sh clones. Not ours to version, and it holds
+# the ccache and Buildroot downloads, which run to gigabytes.
+/seedsigner-os/
+
+# Built images. Large, and reproducible from source, which is the point.
+/images/
+*.img
+*.img.sha256
+
+__pycache__/
+*.pyc
+.pytest_cache/

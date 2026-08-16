@@ -181,6 +181,12 @@ tests/test_seedpass.py                           unit tests
 tests/test_flows_seedpass.py                     flow tests
 ```
 
+Also patched: the opening splash. SeedSigner's shows "With support from:" above
+the Human Rights Foundation logo. HRF sponsors SeedSigner, not this fork, so
+displaying it here would claim an endorsement that was never given. The patch
+empties the partner list and guards the render path; `--revert` puts it back,
+because removing it from *SeedSigner* would be equally wrong.
+
 Replaced files (the original is kept as `<name>.seedpass-original` and put back
 by `--revert`):
 

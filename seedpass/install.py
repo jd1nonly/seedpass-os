@@ -187,6 +187,49 @@ class Patch:
 
 
 PATCHES = [
+    # Remove the sponsor logo from the splash screen.
+    #
+    # SeedSigner's opening splash reads "With support from:" above the Human
+    # Rights Foundation logo. HRF sponsors SeedSigner; they have nothing to do
+    # with SeedPass, and displaying their logo on a device running modified
+    # firmware would claim an endorsement that does not exist. That is a false
+    # statement about a real organisation, not a cosmetic detail.
+    #
+    # The empty partner list is what turns it off: get_random_partner is only
+    # reached when the list is non-empty, so the whole block is skipped.
+    Patch(
+        relative_path="src/seedsigner/views/screensaver.py",
+        marker="SeedPass: no sponsor",
+        anchor=(
+            "        self.partners = [\n"
+            "            \"hrf\",\n"
+            "        ]\n"
+        ),
+        addition=(
+            "        # SeedPass: no sponsor. HRF supports SeedSigner, not this\n"
+            "        # fork, and showing their logo here would claim an\n"
+            "        # endorsement that was never given.\n"
+            "        self.partners = []\n"
+        ),
+    ),
+    Patch(
+        relative_path="src/seedsigner/views/screensaver.py",
+        marker="if not self.partners:",
+        anchor=(
+            "            # Set up the partner logo\n"
+            "            partner_logo: Image.Image = self.partner_logos[self.get_random_partner()]\n"
+        ),
+        addition=(
+            "            # SeedPass: skipped entirely when there is no sponsor.\n"
+            "            if not self.partners:\n"
+            "                self.renderer.show_image()\n"
+            "                return\n"
+            "\n"
+            "            # Set up the partner logo\n"
+            "            partner_logo: Image.Image = self.partner_logos[self.get_random_partner()]\n"
+        ),
+    ),
+
     # SeedPass QR types the stock decoder does not recognise. Handled where the
     # scanner gives up, so nothing SeedSigner already understands is affected:
     # if a QR reaches this branch, stock SeedSigner would have shown

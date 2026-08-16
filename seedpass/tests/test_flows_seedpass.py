@@ -481,6 +481,47 @@ class TestSeedPassFlows(FlowTest):
             FlowStep(MainMenuView),
         ], initial_destination_view_args=dict(seed=seed, request=request))
 
+    # ------------------------------------------------------- splash screen
+
+    def _screensaver_source(self) -> str:
+        """
+        The screensaver source as text.
+
+        Read from disk rather than imported: the flow-test harness mocks this
+        module, so introspecting it returns a MagicMock. The patch is a fact
+        about the file, and that is what is checked.
+        """
+        from pathlib import Path
+
+        import seedsigner
+
+        path = Path(seedsigner.__file__).parent / "views" / "screensaver.py"
+        return path.read_text()
+
+    def test_no_sponsor_logo_on_the_splash(self):
+        """
+        SeedSigner's splash reads "With support from:" above the Human Rights
+        Foundation logo. HRF sponsors SeedSigner, not this fork, and displaying
+        their logo on modified firmware would claim an endorsement that was
+        never given -- a false statement about a real organisation, not a
+        cosmetic detail.
+        """
+        source = self._screensaver_source()
+
+        assert "self.partners = []" in source
+        assert '"hrf",' not in source
+
+    def test_splash_guard_precedes_the_partner_lookup(self):
+        """
+        get_random_partner indexes into the partner list, so an empty list would
+        raise if the render path ever reached it. The guard has to come first.
+        """
+        source = self._screensaver_source()
+
+        guard = source.index("if not self.partners:")
+        lookup = source.index("self.get_random_partner()")
+        assert guard < lookup, "the empty-partner guard must precede the lookup"
+
     def test_discard_seed_is_reachable(self):
         seed = self.load_seed()
         self.run_sequence([
